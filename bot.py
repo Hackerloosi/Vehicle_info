@@ -15,16 +15,17 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import BadRequest
 from rto import fetch_rto_details
 
-# ========= CONFIG =========
+# ================= CONFIG =================
 BOT_TOKEN = "8313512551:AAENVRPjbo4ny--baGTfaf3u9thRKtvuQEc"
-ADMIN_IDS = [1609002531]   # your Telegram ID
+ADMIN_IDS = [1609002531]   # replace with your Telegram ID
 DB_FILE = "users.json"
 
 BROADCAST_MODE = set()
 
-# ========= HELPERS =========
+# ================= HELPERS =================
 def load_db():
     with open(DB_FILE, "r") as f:
         return json.load(f)
@@ -39,7 +40,7 @@ def uname(u):
 def is_admin(uid):
     return uid in ADMIN_IDS
 
-# ========= /START =========
+# ================= /START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = str(user.id)
@@ -82,7 +83,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "[ Note : Only Indian Vehicle Allowed ]"
     )
 
-# ========= /RTO =========
+# ================= /RTO =================
 async def rto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_db()
@@ -101,9 +102,13 @@ async def rto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(json.dumps(data))
 
-# ========= ADMIN =========
+# ================= ADMIN =================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /approve <user_id>")
         return
 
     uid = context.args[0]
@@ -125,6 +130,10 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
+    if not context.args:
+        await update.message.reply_text("Usage: /ban <user_id>")
+        return
+
     uid = context.args[0]
     db = load_db()
 
@@ -135,12 +144,16 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🚫 User banned.")
 
+# ================= BROADCAST =================
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
 
     BROADCAST_MODE.add(update.effective_user.id)
-    await update.message.reply_text("📢 Send one message to broadcast.")
+    await update.message.reply_text(
+        "📢 Broadcast mode enabled.\n"
+        "Send ONE message now."
+    )
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -150,14 +163,17 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BROADCAST_MODE.remove(uid)
     db = load_db()
 
+    sent = 0
     for user_id in db["approved"]:
         try:
             await context.bot.send_message(user_id, update.message.text)
+            sent += 1
         except:
             pass
 
-    await update.message.reply_text("✅ Broadcast sent.")
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
 
+# ================= DELETE =================
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -168,7 +184,12 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for group in ["approved", "pending", "banned"]:
         for uid, info in db[group].items():
             name = info["name"] if isinstance(info, dict) else uid
-            buttons.append([InlineKeyboardButton(f"Delete {name}", callback_data=f"DEL:{uid}")])
+            buttons.append([
+                InlineKeyboardButton(
+                    f"Delete {name}",
+                    callback_data=f"DEL:{uid}"
+                )
+            ])
 
     if not buttons:
         await update.message.reply_text("No users found.")
@@ -194,10 +215,14 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db["banned"].pop(uid, None)
     save_db(db)
 
-    await q.edit_message_text("✅ User deleted. Next /start → approval required.")
+    await q.edit_message_text(
+        "✅ User deleted.\n"
+        "Next /start → approval required again."
+    )
 
-# ========= INIT =========
+# ================= COMMAND MENUS =================
 async def set_commands(app):
+    # Normal user menu
     await app.bot.set_my_commands(
         [
             BotCommand("start", "Start Bot"),
@@ -206,17 +231,22 @@ async def set_commands(app):
         scope=BotCommandScopeDefault(),
     )
 
+    # Admin menu (safe – no crash)
     for admin in ADMIN_IDS:
-        await app.bot.set_my_commands(
-            [
-                BotCommand("approve", "Approve User"),
-                BotCommand("ban", "Ban User"),
-                BotCommand("admin", "Broadcast"),
-                BotCommand("delete", "Delete User"),
-            ],
-            scope=BotCommandScopeChat(admin),
-        )
+        try:
+            await app.bot.set_my_commands(
+                [
+                    BotCommand("approve", "Approve User"),
+                    BotCommand("ban", "Ban User"),
+                    BotCommand("admin", "Broadcast"),
+                    BotCommand("delete", "Delete User"),
+                ],
+                scope=BotCommandScopeChat(chat_id=admin),
+            )
+        except BadRequest:
+            pass  # Telegram may reject on cold start
 
+# ================= MAIN =================
 def main():
     app = (
         ApplicationBuilder()
