@@ -17,21 +17,21 @@ from telegram.ext import (
 )
 from rto import fetch_rto_details
 
-# ================= CONFIG =================
+# ========= CONFIG =========
 BOT_TOKEN = "8313512551:AAENVRPjbo4ny--baGTfaf3u9thRKtvuQEc"
 ADMIN_IDS = [1609002531]   # your Telegram ID
 DB_FILE = "users.json"
 
 BROADCAST_MODE = set()
 
-# ================= HELPERS =================
+# ========= HELPERS =========
 def load_db():
     with open(DB_FILE, "r") as f:
         return json.load(f)
 
-def save_db(data):
+def save_db(db):
     with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(db, f, indent=2)
 
 def uname(u):
     return f"@{u.username}" if u.username else "NoUsername"
@@ -39,7 +39,7 @@ def uname(u):
 def is_admin(uid):
     return uid in ADMIN_IDS
 
-# ================= /START =================
+# ========= /START =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = str(user.id)
@@ -82,7 +82,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "[ Note : Only Indian Vehicle Allowed ]"
     )
 
-# ================= /RTO =================
+# ========= /RTO =========
 async def rto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_db()
@@ -101,7 +101,7 @@ async def rto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(json.dumps(data))
 
-# ================= ADMIN =================
+# ========= ADMIN =========
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -140,10 +140,7 @@ async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     BROADCAST_MODE.add(update.effective_user.id)
-    await update.message.reply_text(
-        "📢 Broadcast Mode Enabled\n"
-        "Send ONE message now."
-    )
+    await update.message.reply_text("📢 Send one message to broadcast.")
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -153,7 +150,7 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     BROADCAST_MODE.remove(uid)
     db = load_db()
 
-    for user_id in db["approved"].keys():
+    for user_id in db["approved"]:
         try:
             await context.bot.send_message(user_id, update.message.text)
         except:
@@ -171,12 +168,7 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for group in ["approved", "pending", "banned"]:
         for uid, info in db[group].items():
             name = info["name"] if isinstance(info, dict) else uid
-            buttons.append([
-                InlineKeyboardButton(
-                    f"Delete {name}",
-                    callback_data=f"DEL:{uid}"
-                )
-            ])
+            buttons.append([InlineKeyboardButton(f"Delete {name}", callback_data=f"DEL:{uid}")])
 
     if not buttons:
         await update.message.reply_text("No users found.")
@@ -188,13 +180,13 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    if not is_admin(query.from_user.id):
+    if not is_admin(q.from_user.id):
         return
 
-    uid = query.data.split(":")[1]
+    uid = q.data.split(":")[1]
     db = load_db()
 
     db["approved"].pop(uid, None)
@@ -202,12 +194,9 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db["banned"].pop(uid, None)
     save_db(db)
 
-    await query.edit_message_text(
-        f"✅ User {uid} deleted.\n"
-        "Next /start → approval required again."
-    )
+    await q.edit_message_text("✅ User deleted. Next /start → approval required.")
 
-# ================= INIT =================
+# ========= INIT =========
 async def set_commands(app):
     await app.bot.set_my_commands(
         [
@@ -229,7 +218,12 @@ async def set_commands(app):
         )
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(set_commands)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("rto", rto_cmd))
@@ -240,7 +234,6 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
 
-    app.post_init = set_commands
     app.run_polling()
 
 if __name__ == "__main__":
