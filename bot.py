@@ -1,9 +1,7 @@
 import json
+import re
 from telegram import (
     Update,
-    BotCommand,
-    BotCommandScopeDefault,
-    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -15,12 +13,11 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import BadRequest
 from rto import fetch_rto_details
 
 # ================= CONFIG =================
 BOT_TOKEN = "8313512551:AAENVRPjbo4ny--baGTfaf3u9thRKtvuQEc"
-ADMIN_IDS = [1609002531]   # replace with your Telegram ID
+ADMIN_IDS = ["1609002531"]   # keep as STRING
 DB_FILE = "users.json"
 
 BROADCAST_MODE = set()
@@ -46,10 +43,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(user.id)
     db = load_db()
 
+    # 🚫 banned
     if uid in db["banned"]:
         await update.message.reply_text("🚫 You are banned from using this bot.")
         return
 
+    # ✅ auto-approve admin
+    if is_admin(uid):
+        if uid not in db["approved"]:
+            db["approved"][uid] = {
+                "name": user.full_name,
+                "username": uname(user),
+            }
+            db["pending"].pop(uid, None)
+            save_db(db)
+
+        await update.message.reply_text(
+            "🤖 Bot Status: ONLINE 🟢\n"
+            "⚡ Service: Active\n\n"
+            "📱 Please Send Vehicle No.\n\n"
+            "[ Note : Only Indian Vehicle Allowed ]"
+        )
+        return
+
+    # ⏳ normal user approval flow
     if uid not in db["approved"]:
         if uid not in db["pending"]:
             db["pending"][uid] = {
@@ -76,6 +93,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # approved user
     await update.message.reply_text(
         "🤖 Bot Status: ONLINE 🟢\n"
         "⚡ Service: Active\n\n"
@@ -83,43 +101,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "[ Note : Only Indian Vehicle Allowed ]"
     )
 
-# ================= /RTO =================
-async def rto_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= VEHICLE NUMBER HANDLER =================
+async def vehicle_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_db()
 
     if uid not in db["approved"]:
         return
 
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /rto KA05P 5175")
+    text = update.message.text.strip().upper()
+
+    # Match: DL9SCG2660 / KA05P5175 etc
+    m = re.match(r"^([A-Z]{2}\d{1,2}[A-Z]{0,3})(\d{4})$", text)
+    if not m:
         return
 
-    data = fetch_rto_details(context.args[0].upper(), context.args[1])
+    reg1 = m.group(1)
+    reg2 = m.group(2)
+
+    await update.message.reply_text("🔍 Fetching vehicle details...")
+
+    data = fetch_rto_details(reg1, reg2)
     if not data:
-        await update.message.reply_text("Failed to fetch data.")
+        await update.message.reply_text("❌ No data found or server blocked.")
         return
 
     await update.message.reply_text(json.dumps(data))
 
-# ================= ADMIN =================
+# ================= ADMIN COMMANDS =================
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = str(update.effective_user.id)
+    if not is_admin(uid):
         return
 
     if not context.args:
         await update.message.reply_text("Usage: /approve <user_id>")
         return
 
-    uid = context.args[0]
+    target = context.args[0]
     db = load_db()
 
-    if uid in db["pending"]:
-        db["approved"][uid] = db["pending"].pop(uid)
+    if target in db["pending"]:
+        db["approved"][target] = db["pending"].pop(target)
         save_db(db)
 
         await context.bot.send_message(
-            uid,
+            target,
             "✅ Owner approved you!\n"
             "🎉 Now you can use this bot.\n"
             "📱 Send /start to begin."
@@ -127,36 +154,35 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ User approved.")
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = str(update.effective_user.id)
+    if not is_admin(uid):
         return
 
     if not context.args:
         await update.message.reply_text("Usage: /ban <user_id>")
         return
 
-    uid = context.args[0]
+    target = context.args[0]
     db = load_db()
 
-    db["approved"].pop(uid, None)
-    db["pending"].pop(uid, None)
-    db["banned"][uid] = True
+    db["approved"].pop(target, None)
+    db["pending"].pop(target, None)
+    db["banned"][target] = True
     save_db(db)
 
     await update.message.reply_text("🚫 User banned.")
 
 # ================= BROADCAST =================
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = str(update.effective_user.id)
+    if not is_admin(uid):
         return
 
-    BROADCAST_MODE.add(update.effective_user.id)
-    await update.message.reply_text(
-        "📢 Broadcast mode enabled.\n"
-        "Send ONE message now."
-    )
+    BROADCAST_MODE.add(uid)
+    await update.message.reply_text("📢 Send ONE message to broadcast.")
 
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    uid = str(update.effective_user.id)
     if uid not in BROADCAST_MODE:
         return
 
@@ -175,19 +201,20 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= DELETE =================
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    uid = str(update.effective_user.id)
+    if not is_admin(uid):
         return
 
     db = load_db()
     buttons = []
 
     for group in ["approved", "pending", "banned"]:
-        for uid, info in db[group].items():
-            name = info["name"] if isinstance(info, dict) else uid
+        for u, info in db[group].items():
+            name = info["name"] if isinstance(info, dict) else u
             buttons.append([
                 InlineKeyboardButton(
                     f"Delete {name}",
-                    callback_data=f"DEL:{uid}"
+                    callback_data=f"DEL:{u}"
                 )
             ])
 
@@ -204,15 +231,16 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    if not is_admin(q.from_user.id):
+    uid = str(q.from_user.id)
+    if not is_admin(uid):
         return
 
-    uid = q.data.split(":")[1]
+    target = q.data.split(":")[1]
     db = load_db()
 
-    db["approved"].pop(uid, None)
-    db["pending"].pop(uid, None)
-    db["banned"].pop(uid, None)
+    db["approved"].pop(target, None)
+    db["pending"].pop(target, None)
+    db["banned"].pop(target, None)
     save_db(db)
 
     await q.edit_message_text(
@@ -220,49 +248,25 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Next /start → approval required again."
     )
 
-# ================= COMMAND MENUS =================
-async def set_commands(app):
-    # Normal user menu
-    await app.bot.set_my_commands(
-        [
-            BotCommand("start", "Start Bot"),
-            BotCommand("rto", "Vehicle Lookup"),
-        ],
-        scope=BotCommandScopeDefault(),
-    )
-
-    # Admin menu (safe – no crash)
-    for admin in ADMIN_IDS:
-        try:
-            await app.bot.set_my_commands(
-                [
-                    BotCommand("approve", "Approve User"),
-                    BotCommand("ban", "Ban User"),
-                    BotCommand("admin", "Broadcast"),
-                    BotCommand("delete", "Delete User"),
-                ],
-                scope=BotCommandScopeChat(chat_id=admin),
-            )
-        except BadRequest:
-            pass  # Telegram may reject on cold start
-
 # ================= MAIN =================
 def main():
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
-        .post_init(set_commands)
         .build()
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("rto", rto_cmd))
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("ban", ban))
     app.add_handler(CommandHandler("admin", admin_broadcast))
     app.add_handler(CommandHandler("delete", delete_cmd))
-    app.add_handler(CallbackQueryHandler(delete_callback))
+
+    # order matters
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, vehicle_text_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_broadcast))
+
+    app.add_handler(CallbackQueryHandler(delete_callback))
 
     app.run_polling()
 
