@@ -1,27 +1,41 @@
 import requests
 from bs4 import BeautifulSoup, SoupStrainer
+import time
+import random
 
 HOME_URL = "https://parivahan.gov.in/rcdlstatus/"
 POST_URL = "https://parivahan.gov.in/rcdlstatus/vahan/rcDlHome.xhtml"
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
 def fetch_rto_details(first, second):
     try:
-        # Step 1: Get home page (cookies + viewstate)
-        r = requests.get(
-            HOME_URL,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=20
-        )
-        cookies = r.cookies
+        session = requests.Session()
+        session.headers.update(HEADERS)
 
+        # Step 1: home page
+        r = session.get(HOME_URL, timeout=20)
         soup = BeautifulSoup(r.text, "html.parser")
-        viewstate_tag = soup.select_one('input[name="javax.faces.ViewState"]')
-        if not viewstate_tag:
+
+        vs = soup.select_one('input[name="javax.faces.ViewState"]')
+        if not vs:
             return None
 
-        viewstate = viewstate_tag["value"]
+        viewstate = vs["value"]
 
-        # Step 2: POST request (JSF AJAX)
+        # Small human-like delay
+        time.sleep(random.uniform(1.5, 3.0))
+
+        # Step 2: submit form
         data = {
             "javax.faces.partial.ajax": "true",
             "javax.faces.source": "form_rcdl:j_idt32",
@@ -34,30 +48,32 @@ def fetch_rto_details(first, second):
             "javax.faces.ViewState": viewstate,
         }
 
-        r = requests.post(
+        r = session.post(
             POST_URL,
             data=data,
-            cookies=cookies,
             headers={
-                "User-Agent": "Mozilla/5.0",
+                **HEADERS,
                 "Faces-Request": "partial/ajax",
                 "X-Requested-With": "XMLHttpRequest",
+                "Referer": HOME_URL,
             },
-            timeout=20
+            timeout=20,
         )
 
-        # Step 3: Extract table rows text
+        # Step 3: extract table rows
         soup = BeautifulSoup(r.text, "html.parser")
         table_only = SoupStrainer("tr")
-        soup = BeautifulSoup(soup.get_text(), "html.parser", parse_only=table_only)
+        soup = BeautifulSoup(
+            soup.get_text(),
+            "html.parser",
+            parse_only=table_only,
+        )
 
         text = soup.get_text(separator="\n").strip()
-
-        if not text:
+        if not text or "Registration No" not in text:
             return None
 
-        # Return RAW text (same style as your PHP / CLI)
         return text
 
-    except Exception as e:
+    except Exception:
         return None
